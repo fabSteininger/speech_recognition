@@ -670,26 +670,69 @@ class Recognizer(AudioSource):
         if hypothesis is not None: return hypothesis.hypstr
         raise UnknownValueError()  # no transcriptions available
 
-    def recognize_google(self, audio_data, key=None, language="en-US", pfilter=0, show_all=False, with_confidence=False):
+
+    def recognize_coqui(self, audio_data, language="en-US", show_all=False, ds_beamwidth=None, ds_lm_alpha=None, ds_lm_beta=None, model_file=None, scorer_file=None, model_base_dir=None):
+        """
+        Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using Coqui.ai.
+        """
+        assert isinstance(audio_data, AudioData), "``audio_data`` must be audio data"
+        assert isinstance(language, str) or (isinstance(language, tuple) and len(language) == 3), "``language`` must be a string or 3-tuple of Sphinx data file paths of the form ``(acoustic_parameters, language_model, phoneme_dictionary)``"
+        try:
+            import numpy as np
+        except ImportError:
+            raise RequestError("missing numpy module.")
+        try:
+            import stt
+        except ImportError:
+            raise RequestError("missing Coqui module: ensure that Coqui is set up correctly.")
+        except ValueError:
+            raise RequestError("bad Coqui installation; try reinstalling Coqui version 0.7.0 or better.")
+        
+        if model_file is None:
+            used_base_dir = os.path.join(model_base_dir,language)
+            if used_base_dir is None:
+                if isinstance(language, str):  # directory containing language data
+                    language_directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "coqui-data", language)
+                    if not os.path.isdir(language_directory):
+                        raise RequestError("missing Coqui language data directory: \"{}\"".format(language_directory))
+                    used_base_dir = language_directory
+                else:
+                    raise RequestError(f"cannot find Coqui data")
+            DSversion = stt.version()
+            # use the tflite version on arm architectures
+            # Coqui just supports tflite instead of pbmm
+            model_file = os.path.join(used_base_dir, "Coqui-{}-models.tflite".format(DSversion))
+            scorer_file = os.path.join(used_base_dir, "Coqui-{}-models.scorer".format(DSversion))
+        if not os.path.isfile(model_file):
+            raise RequestError("missing Coqui model file: \"{}\"".format(model_file))
+        # we might have scorer_file=None because model_file was given but not
+        # scorer_file. In this case we do not use the scorer.
+        if not scorer_file is None and not os.path.isfile(scorer_file):
+            raise RequestError("missing Coqui scorer file: \"{}\"".format(scorer_file))
+        # this initializes a new Coqui model, but the actual model is only loaded once
+        ds = CoquiModel(model_file, scorer_file)
+        desired_sample_rate = ds.sampleRate()
+        # obtain audio data
+        # the included language models require audio to be 16-bit mono 16 kHz in little-endian format
+        raw_data = audio_data.get_raw_data(convert_rate=desired_sample_rate, convert_width=2)
+        recognized_string, recognized_metadata = ds.recognize(np.frombuffer(raw_data, np.int16))
+        if show_all: 
+            return recognized_metadata
+        return recognized_string
+
+    def recognize_google(self, audio_data, key=None, language="en-US", pfilter=0, show_all=False):
         """
         Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using the Google Speech Recognition API.
-
         The Google Speech Recognition API key is specified by ``key``. If not specified, it uses a generic key that works out of the box. This should generally be used for personal or testing purposes only, as it **may be revoked by Google at any time**.
-
         To obtain your own API key, simply following the steps on the `API Keys <http://www.chromium.org/developers/how-tos/api-keys>`__ page at the Chromium Developers site. In the Google Developers Console, Google Speech Recognition is listed as "Speech API".
-
         The recognition language is determined by ``language``, an RFC5646 language tag like ``"en-US"`` (US English) or ``"fr-FR"`` (International French), defaulting to US English. A list of supported language tags can be found in this `StackOverflow answer <http://stackoverflow.com/a/14302134>`__.
-
         The profanity filter level can be adjusted with ``pfilter``: 0 - No filter, 1 - Only shows the first character and replaces the rest with asterisks. The default is level 0.
-
         Returns the most likely transcription if ``show_all`` is false (the default). Otherwise, returns the raw API response as a JSON dictionary.
-
         Raises a ``speech_recognition.UnknownValueError`` exception if the speech is unintelligible. Raises a ``speech_recognition.RequestError`` exception if the speech recognition operation failed, if the key isn't valid, or if there is no internet connection.
         """
         assert isinstance(audio_data, AudioData), "``audio_data`` must be audio data"
         assert key is None or isinstance(key, str), "``key`` must be ``None`` or a string"
         assert isinstance(language, str), "``language`` must be a string"
-
         flac_data = audio_data.get_flac_data(
             convert_rate=None if audio_data.sample_rate >= 8000 else 8000,  # audio samples must be at least 8 kHz
             convert_width=2  # audio samples must be 16-bit
@@ -702,7 +745,6 @@ class Recognizer(AudioSource):
             "pFilter": pfilter
         }))
         request = Request(url, data=flac_data, headers={"Content-Type": "audio/x-flac; rate={}".format(audio_data.sample_rate)})
-
         # obtain audio transcription results
         try:
             response = urlopen(request, timeout=self.operation_timeout)
@@ -711,22 +753,24 @@ class Recognizer(AudioSource):
         except URLError as e:
             raise RequestError("recognition connection failed: {}".format(e.reason))
         response_text = response.read().decode("utf-8")
-
+        # print('response_text:')
+        # pprint(response_text, indent=4)
         # ignore any blank blocks
         actual_result = []
         for line in response_text.split("\n"):
             if not line: continue
-            result = json.loads(line)["result"]
+            result = json.loads(line)["result"]            
+            # print('result1:')
+            # pprint(result, indent=4)
             if len(result) != 0:
                 actual_result = result[0]
                 break
-
         # return results
         if show_all:
             return actual_result
-
+            print('result2:')
+            pprint(actual_result, indent=4)
         if not isinstance(actual_result, dict) or len(actual_result.get("alternative", [])) == 0: raise UnknownValueError()
-
         if "confidence" in actual_result["alternative"]:
             # return alternative with highest confidence score
             best_hypothesis = max(actual_result["alternative"], key=lambda alternative: alternative["confidence"])
@@ -737,9 +781,8 @@ class Recognizer(AudioSource):
         # https://cloud.google.com/speech-to-text/docs/basics#confidence-values
         # "Your code should not require the confidence field as it is not guaranteed to be accurate, or even set, in any of the results."
         confidence = best_hypothesis.get("confidence", 0.5)
-        if with_confidence:
-            return best_hypothesis["transcript"], confidence
-        return best_hypothesis["transcript"]
+        return best_hypothesis["transcript"], confidence
+
 
     def recognize_google_cloud(self, audio_data, credentials_json=None, language="en-US", preferred_phrases=None, show_all=False):
         """
@@ -815,25 +858,19 @@ class Recognizer(AudioSource):
     def recognize_wit(self, audio_data, key, show_all=False):
         """
         Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using the Wit.ai API.
-
         The Wit.ai API key is specified by ``key``. Unfortunately, these are not available without `signing up for an account <https://wit.ai/>`__ and creating an app. You will need to add at least one intent to the app before you can see the API key, though the actual intent settings don't matter.
-
         To get the API key for a Wit.ai app, go to the app's overview page, go to the section titled "Make an API request", and look for something along the lines of ``Authorization: Bearer XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX``; ``XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`` is the API key. Wit.ai API keys are 32-character uppercase alphanumeric strings.
-
         The recognition language is configured in the Wit.ai app settings.
-
         Returns the most likely transcription if ``show_all`` is false (the default). Otherwise, returns the `raw API response <https://wit.ai/docs/http/20141022#get-intent-via-text-link>`__ as a JSON dictionary.
-
         Raises a ``speech_recognition.UnknownValueError`` exception if the speech is unintelligible. Raises a ``speech_recognition.RequestError`` exception if the speech recognition operation failed, if the key isn't valid, or if there is no internet connection.
         """
         assert isinstance(audio_data, AudioData), "Data must be audio data"
         assert isinstance(key, str), "``key`` must be a string"
-
         wav_data = audio_data.get_wav_data(
-            convert_rate=None if audio_data.sample_rate >= 8000 else 8000,  # audio samples must be at least 8 kHz
+            convert_rate=16000,  # audio samples must be 8kHz or 16 kHz
             convert_width=2  # audio samples should be 16-bit
         )
-        url = "https://api.wit.ai/speech?v=20170307"
+        url = "https://api.wit.ai/dictation"
         request = Request(url, data=wav_data, headers={"Authorization": "Bearer {}".format(key), "Content-Type": "audio/wav"})
         try:
             response = urlopen(request, timeout=self.operation_timeout)
@@ -842,12 +879,16 @@ class Recognizer(AudioSource):
         except URLError as e:
             raise RequestError("recognition connection failed: {}".format(e.reason))
         response_text = response.read().decode("utf-8")
+        # extract the last chunk 
+        last_chunk = response_text.rfind("is_final")
+        response_text = '{"'+response_text[last_chunk : ]
+        # read the chunk as json file
         result = json.loads(response_text)
-
+        
         # return results
         if show_all: return result
-        if "_text" not in result or result["_text"] is None: raise UnknownValueError()
-        return result["_text"]
+        if "text" not in result or result["text"] is None: raise UnknownValueError()
+        return result["text"]
 
     def recognize_azure(self, audio_data, key, language="en-US", profanity="masked", location="westus", show_all=False):
         """
@@ -1168,7 +1209,8 @@ class Recognizer(AudioSource):
         try:
             # Bucket creation fails surprisingly often, even if the bucket exists.
             # print('Attempting to create bucket %s...' % bucket_name)
-            s3.create_bucket(Bucket=bucket_name)
+            location = {'LocationConstraint': region}
+            s3.create_bucket(Bucket=bucket_name,CreateBucketConfiguration=location)
         except ClientError as exc:
             print('Error creating bucket %s: %s' % (bucket_name, exc))
         s3res = session.resource('s3')
@@ -1182,110 +1224,53 @@ class Recognizer(AudioSource):
         else:
             print('Skipping audio upload.')
         job_uri = 'https://%s.s3.amazonaws.com/%s' % (bucket_name, filename)
+        # launch the job
+        job_status=False
+        try:
+            transcribe.start_transcription_job(
+                TranscriptionJobName=job_name,
+                Media={'MediaFileUri': job_uri},
+                MediaFormat='wav',
+                LanguageCode='de-DE',
+            )
+            job_status=True
+        except Exception as e:
+            return e
+        # if job launched successfully `job_status` will be True
+        if job_status: # and we can start requesting the results from the service
+                    # let's obtain the job instance
 
-        if check_existing:
+    
 
-            # Wait for job to complete.
-            try:
-                status = transcribe.get_transcription_job(TranscriptionJobName=job_name)
-            except ClientError as exc:
-                print('!'*80)
-                print('Error getting job:', exc.response)
-                if exc.response['Error']['Code'] == 'BadRequestException' and "The requested job couldn't be found" in str(exc):
-                    # Some error caused the job we recorded to not exist on AWS.
-                    # Likely we were interrupted right after retrieving and deleting the job but before recording the transcript.
-                    # Reset and try again later.
-                    exc = TranscriptionNotReady()
-                    exc.job_name = None
-                    exc.file_key = None
-                    raise exc
+            while True:
+                # check the status every 5 seconds and 
+                # return the transcribed text if the job is finished
+                # otherwise return None if job failed
+                job = transcribe.get_transcription_job(TranscriptionJobName=job_name)
+                # and it's status
+                status = job['TranscriptionJob']['TranscriptionJobStatus']
+                if status == 'COMPLETED':
+                    print(f"Job {job_name} completed")
+                    import urllib.request, json
+                    with urllib.request.urlopen(job['TranscriptionJob']['Transcript']['TranscriptFileUri']) as json_data:
+                        d = json.load(json_data)
+                        # Delete job.
+                        try:
+                            transcribe.delete_transcription_job(TranscriptionJobName=job_name) # cleanup
+                        except Exception as exc:
+                            print('Warning, could not clean up transcription: %s' % exc)
+                            traceback.print_exc()
+                        # Delete S3 file.
+                        s3.delete_object(Bucket=bucket_name, Key=filename)
+                    return d['results']['transcripts'][0]['transcript']
+                elif status == 'FAILED':
+                    print(f"Job {job_name} failed")
+                    return None
                 else:
-                    # Some other error happened, so re-raise.
-                    raise
-            
-            job = status['TranscriptionJob']
-            if job['TranscriptionJobStatus'] in ['COMPLETED'] and 'TranscriptFileUri' in job['Transcript']:
-
-                # Retrieve transcription JSON containing transcript.
-                transcript_uri = job['Transcript']['TranscriptFileUri']
-                import urllib.request, json
-                with urllib.request.urlopen(transcript_uri) as json_data:
-                    d = json.load(json_data)
-                    confidences = []
-                    for item in d['results']['items']:
-                        confidences.append(float(item['alternatives'][0]['confidence']))
-                    confidence = 0.5
-                    if confidences:
-                        confidence = sum(confidences)/float(len(confidences))
-                    transcript = d['results']['transcripts'][0]['transcript']
-
-                    # Delete job.
-                    try:
-                        transcribe.delete_transcription_job(TranscriptionJobName=job_name) # cleanup
-                    except Exception as exc:
-                        print('Warning, could not clean up transcription: %s' % exc)
-                        traceback.print_exc()
-
-                    # Delete S3 file.
-                    s3.delete_object(Bucket=bucket_name, Key=filename)
-
-                    return transcript, confidence
-            elif job['TranscriptionJobStatus'] in ['FAILED']:
-            
-                # Delete job.
-                try:
-                    transcribe.delete_transcription_job(TranscriptionJobName=job_name) # cleanup
-                except Exception as exc:
-                    print('Warning, could not clean up transcription: %s' % exc)
-                    traceback.print_exc()
-
-                # Delete S3 file.
-                s3.delete_object(Bucket=bucket_name, Key=filename)
-                
-                exc = TranscriptionFailed()
-                exc.job_name = None
-                exc.file_key = None
-                raise exc
-            else:
-                # Keep waiting.
-                print('Keep waiting.')
-                exc = TranscriptionNotReady()
-                exc.job_name = job_name
-                exc.file_key = None
-                raise exc
-
-        else:
-
-            # Launch the transcription job.
-            # try:
-                # transcribe.delete_transcription_job(TranscriptionJobName=job_name) # pre-cleanup
-            # except:
-                # # It's ok if this fails because the job hopefully doesn't exist yet.
-                # pass
-            try:
-                transcribe.start_transcription_job(
-                    TranscriptionJobName=job_name,
-                    Media={'MediaFileUri': job_uri},
-                    MediaFormat='wav',
-                    LanguageCode='en-US'
-                )
-                exc = TranscriptionNotReady()
-                exc.job_name = job_name
-                exc.file_key = None
-                raise exc
-            except ClientError as exc:
-                print('!'*80)
-                print('Error starting job:', exc.response)
-                if exc.response['Error']['Code'] == 'LimitExceededException':
-                    # Could not start job. Cancel everything.
-                    s3.delete_object(Bucket=bucket_name, Key=filename)
-                    exc = TranscriptionNotReady()
-                    exc.job_name = None
-                    exc.file_key = None
-                    raise exc
-                else:
-                    # Some other error happened, so re-raise.
-                    raise
+                    print(f"Status of job {job_name}: {status}")
+                    time.sleep(5)
+        else: # or print the error code if somethign went wrong
+            print(f'Job {job_name} failed with the error: {job_status}')
 
     def recognize_assemblyai(self, audio_data, api_token, job_name=None, **kwargs):
         """
@@ -1356,7 +1341,7 @@ class Recognizer(AudioSource):
             exc.file_key = None
             raise exc
 
-    def recognize_ibm(self, audio_data, key, language="en-US", show_all=False):
+    def recognize_ibm(self, audio_data, key, instance, model="de-DE_BroadbandModel", show_all=False,serverLocation="eu-de"):
         """
         Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using the IBM Speech to Text API.
 
@@ -1375,7 +1360,7 @@ class Recognizer(AudioSource):
             convert_rate=None if audio_data.sample_rate >= 16000 else 16000,  # audio samples should be at least 16 kHz
             convert_width=None if audio_data.sample_width >= 2 else 2  # audio samples should be at least 16-bit
         )
-        url = "https://gateway-wdc.watsonplatform.net/speech-to-text/api/v1/recognize"
+        url = "https://api."+serverLocation+".speech-to-text.watson.cloud.ibm.com/instances/"+instance+"/v1/recognize?model="+model
         request = Request(url, data=flac_data, headers={
             "Content-Type": "audio/x-flac",
         })
@@ -1394,7 +1379,10 @@ class Recognizer(AudioSource):
         result = json.loads(response_text)
 
         # return results
+        # return results
         if show_all:
+            print('result:')
+            pprint(result, indent=4)
             return result
         if "results" not in result or len(result["results"]) < 1 or "alternatives" not in result["results"][0]:
             raise UnknownValueError()
@@ -1503,24 +1491,24 @@ class Recognizer(AudioSource):
 
     recognize_whisper_api = whisper.recognize_whisper_api
             
-    def recognize_vosk(self, audio_data, language='en'):
+    def recognize_vosk(self, audio_data, modelPath):
         from vosk import Model, KaldiRecognizer
+        from vosk import SetLogLevel
+        SetLogLevel(-1)
         
         assert isinstance(audio_data, AudioData), "Data must be audio data"
-        
         if not hasattr(self, 'vosk_model'):
-            if not os.path.exists("model"):
+            if not os.path.exists(modelPath):
                 return "Please download the model from https://github.com/alphacep/vosk-api/blob/master/doc/models.md and unpack as 'model' in the current folder."
                 exit (1)
-            self.vosk_model = Model("model")
-
+            self.vosk_model = Model(modelPath)
         rec = KaldiRecognizer(self.vosk_model, 16000);
         
         rec.AcceptWaveform(audio_data.get_raw_data(convert_rate=16000, convert_width=2));
         finalRecognition = rec.FinalResult()
+        finalRecognition=json.loads(finalRecognition)["text"]
         
         return finalRecognition
-
 
 class PortableNamedTemporaryFile(object):
     """Limited replacement for ``tempfile.NamedTemporaryFile``, except unlike ``tempfile.NamedTemporaryFile``, the file can be opened again while it's currently open, even on Windows."""

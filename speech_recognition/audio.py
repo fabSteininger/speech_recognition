@@ -315,3 +315,50 @@ def shutil_which(pgm):
         p = os.path.join(p, pgm)
         if os.path.exists(p) and os.access(p, os.X_OK):
             return p
+
+class CoquiModel():
+    ds = None
+    model_file = None
+    scorer_file = None
+    beam_width = None
+    lm_alpha = None
+    lm_beta = None
+
+    def __init__(self, model_file, scorer_file=None, beam_width=None, lm_alpha=None, lm_beta=None):
+        """
+        Creates a Coqui model from ``model_file``.
+        If ``scorer_file`` is given, initialize the scorer, too.
+        If ``beam_width``, ``lm_alpha``, ``lm_beta`` is given, the model parameters for the
+        scorer are set accordingly.
+        """
+        try:
+            import stt
+        except ImportError:
+            raise RequestError("missing Coqui module: ensure that Coqui is set up correctly.")
+        except ValueError:
+            raise RequestError("bad Coqui installation; try reinstalling Coqui version 0.7.0 or better.")
+        
+        # if model is already created and all parameters agree, don't reinit it
+        if CoquiModel.ds is not None and CoquiModel.model_file == model_file and CoquiModel.scorer_file == scorer_file and CoquiModel.beam_width == beam_width and CoquiModel.lm_alpha == lm_alpha and CoquiModel.lm_beta == lm_beta:
+            return
+
+        CoquiModel.model_file = model_file
+        CoquiModel.scorer_file = scorer_file
+        CoquiModel.beam_width = beam_width
+        CoquiModel.lm_alpha = lm_alpha
+        CoquiModel.lm_beta = lm_beta
+        CoquiModel.ds = stt.Model(model_file)
+        if beam_width:
+            CoquiModel.ds.setModelBeamWidth(beam_width)
+        if scorer_file:
+            CoquiModel.ds.enableExternalScorer(scorer_file)
+            if lm_alpha and lm_beta:
+                CoquiModel.ds.setScorerAlphaBeta(lm_alpha, lm_beta)
+
+    def sampleRate(self):
+        return CoquiModel.ds.sampleRate()
+
+    def recognize(self, audio):
+        recognized_metadata = CoquiModel.ds.sttWithMetadata(audio,1).transcripts[0]
+        recognized_string = ''.join(token.text for token in recognized_metadata.tokens)
+        return recognized_string, recognized_metadata
