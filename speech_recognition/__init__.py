@@ -26,7 +26,7 @@ except (ModuleNotFoundError, ImportError):
     pass
 
 __author__ = "Anthony Zhang (Uberi)"
-__version__ = "3.9.0"
+__version__ = "3.10.0"
 __license__ = "BSD"
 
 from urllib.parse import urlencode
@@ -669,56 +669,6 @@ class Recognizer(AudioSource):
         hypothesis = decoder.hyp()
         if hypothesis is not None: return hypothesis.hypstr
         raise UnknownValueError()  # no transcriptions available
-
-
-    def recognize_coqui(self, audio_data, language="en-US", show_all=False, ds_beamwidth=None, ds_lm_alpha=None, ds_lm_beta=None, model_file=None, scorer_file=None, model_base_dir=None):
-        """
-        Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using Coqui.ai.
-        """
-        assert isinstance(audio_data, AudioData), "``audio_data`` must be audio data"
-        assert isinstance(language, str) or (isinstance(language, tuple) and len(language) == 3), "``language`` must be a string or 3-tuple of Sphinx data file paths of the form ``(acoustic_parameters, language_model, phoneme_dictionary)``"
-        try:
-            import numpy as np
-        except ImportError:
-            raise RequestError("missing numpy module.")
-        try:
-            import stt
-        except ImportError:
-            raise RequestError("missing Coqui module: ensure that Coqui is set up correctly.")
-        except ValueError:
-            raise RequestError("bad Coqui installation; try reinstalling Coqui version 0.7.0 or better.")
-        
-        if model_file is None:
-            used_base_dir = os.path.join(model_base_dir,language)
-            if used_base_dir is None:
-                if isinstance(language, str):  # directory containing language data
-                    language_directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "coqui-data", language)
-                    if not os.path.isdir(language_directory):
-                        raise RequestError("missing Coqui language data directory: \"{}\"".format(language_directory))
-                    used_base_dir = language_directory
-                else:
-                    raise RequestError(f"cannot find Coqui data")
-            DSversion = stt.version()
-            # use the tflite version on arm architectures
-            # Coqui just supports tflite instead of pbmm
-            model_file = os.path.join(used_base_dir, "Coqui-{}-models.tflite".format(DSversion))
-            scorer_file = os.path.join(used_base_dir, "Coqui-{}-models.scorer".format(DSversion))
-        if not os.path.isfile(model_file):
-            raise RequestError("missing Coqui model file: \"{}\"".format(model_file))
-        # we might have scorer_file=None because model_file was given but not
-        # scorer_file. In this case we do not use the scorer.
-        if not scorer_file is None and not os.path.isfile(scorer_file):
-            raise RequestError("missing Coqui scorer file: \"{}\"".format(scorer_file))
-        # this initializes a new Coqui model, but the actual model is only loaded once
-        ds = CoquiModel(model_file, scorer_file)
-        desired_sample_rate = ds.sampleRate()
-        # obtain audio data
-        # the included language models require audio to be 16-bit mono 16 kHz in little-endian format
-        raw_data = audio_data.get_raw_data(convert_rate=desired_sample_rate, convert_width=2)
-        recognized_string, recognized_metadata = ds.recognize(np.frombuffer(raw_data, np.int16))
-        if show_all: 
-            return recognized_metadata
-        return recognized_string
 
     def recognize_google(self, audio_data, key=None, language="en-US", pfilter=0, show_all=False):
         """
@@ -1489,7 +1439,11 @@ class Recognizer(AudioSource):
         else:
             return result["text"]
 
-    recognize_whisper_api = whisper.recognize_whisper_api
+    def recognize_whisper_api(self, path):
+        import openai
+        file = open(path, "rb")
+        transcription = openai.Audio.transcribe("whisper-1", file)
+        print(transcription)
             
     def recognize_vosk(self, audio_data, modelPath):
         from vosk import Model, KaldiRecognizer
