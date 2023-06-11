@@ -1112,70 +1112,40 @@ class Recognizer(AudioSource):
         return result['Disambiguation']['ChoiceData'][0]['Transcription'], result['Disambiguation']['ChoiceData'][0]['ConfidenceScore']
 
     def recognize_amazon(self, audio_data, bucket_name=None, access_key_id=None, secret_access_key=None, region=None, job_name=None, file_key=None):
-        """
-        Performs speech recognition on ``audio_data`` (an ``AudioData`` instance) using Amazon Transcribe.
-        https://aws.amazon.com/transcribe/
-        If access_key_id or secret_access_key is not set it will go through the list in the link below
-        http://boto3.readthedocs.io/en/latest/guide/configuration.html#configuring-credentials
-        """
-        assert access_key_id is None or isinstance(access_key_id, str), "``access_key_id`` must be a string"
-        assert secret_access_key is None or isinstance(secret_access_key, str), "``secret_access_key`` must be a string"
-        assert region is None or isinstance(region, str), "``region`` must be a string"
-        import traceback
+        import boto3
+        import time
+        import urllib.request
+        import json
         import uuid
-        import multiprocessing
-        from botocore.exceptions import ClientError
-        proc = multiprocessing.current_process()
-
-        check_existing = audio_data is None and job_name
-
-        bucket_name = bucket_name or ('%s-%s' % (str(uuid.uuid4()), proc.pid))
-        job_name = job_name or ('%s-%s' % (str(uuid.uuid4()), proc.pid))
-
         try:
-            import boto3
+            transcribe = boto3.client(
+                'transcribe',
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+                region_name=region
+            )
+            s3 = boto3.client(
+                's3',
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+                region_name=region
+            )
         except ImportError:
             raise RequestError("missing boto3 module: ensure that boto3 is set up correctly.")
 
-        transcribe = boto3.client(
-            'transcribe',
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
-            region_name=region)
+        job_name = job_name or str(uuid.uuid4())
 
-        s3 = boto3.client('s3', 
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
-            region_name=region)
-
-        session = boto3.Session(
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
-            region_name=region
-        )
-
-        # Upload audio data to S3.
-        filename = '%s.wav' % job_name
-        try:
-            # Bucket creation fails surprisingly often, even if the bucket exists.
-            # print('Attempting to create bucket %s...' % bucket_name)
-            location = {'LocationConstraint': region}
-            s3.create_bucket(Bucket=bucket_name,CreateBucketConfiguration=location)
-        except ClientError as exc:
-            print('Error creating bucket %s: %s' % (bucket_name, exc))
-        s3res = session.resource('s3')
-        bucket = s3res.Bucket(bucket_name)
         if audio_data is not None:
             print('Uploading audio data...')
             wav_data = audio_data.get_wav_data()
+            filename = f'{job_name}.wav'
             s3.put_object(Bucket=bucket_name, Key=filename, Body=wav_data)
-            object_acl = s3res.ObjectAcl(bucket_name, filename)
-            object_acl.put(ACL='public-read')
         else:
             print('Skipping audio upload.')
-        job_uri = 'https://%s.s3.amazonaws.com/%s' % (bucket_name, filename)
-        # launch the job
-        job_status=False
+
+        job_uri = f'https://{bucket_name}.s3.amazonaws.com/{filename}'
+
+        job_status = False
         try:
             transcribe.start_transcription_job(
                 TranscriptionJobName=job_name,
@@ -1183,34 +1153,25 @@ class Recognizer(AudioSource):
                 MediaFormat='wav',
                 LanguageCode='de-DE',
             )
-            job_status=True
+            job_status = True
         except Exception as e:
             return e
-        # if job launched successfully `job_status` will be True
-        if job_status: # and we can start requesting the results from the service
-                    # let's obtain the job instance
 
-    
-
+        if job_status:
             while True:
-                # check the status every 5 seconds and 
-                # return the transcribed text if the job is finished
-                # otherwise return None if job failed
                 job = transcribe.get_transcription_job(TranscriptionJobName=job_name)
-                # and it's status
                 status = job['TranscriptionJob']['TranscriptionJobStatus']
                 if status == 'COMPLETED':
                     print(f"Job {job_name} completed")
-                    import urllib.request, json
+                    duration = job['TranscriptionJob']['CompletionTime'] - job['TranscriptionJob']['CreationTime']
+                    print(f"Transcription job took {duration.seconds} seconds")
                     with urllib.request.urlopen(job['TranscriptionJob']['Transcript']['TranscriptFileUri']) as json_data:
                         d = json.load(json_data)
-                        # Delete job.
                         try:
-                            transcribe.delete_transcription_job(TranscriptionJobName=job_name) # cleanup
+                            transcribe.delete_transcription_job(TranscriptionJobName=job_name)
                         except Exception as exc:
                             print('Warning, could not clean up transcription: %s' % exc)
                             traceback.print_exc()
-                        # Delete S3 file.
                         s3.delete_object(Bucket=bucket_name, Key=filename)
                     return d['results']['transcripts'][0]['transcript']
                 elif status == 'FAILED':
@@ -1219,7 +1180,7 @@ class Recognizer(AudioSource):
                 else:
                     print(f"Status of job {job_name}: {status}")
                     time.sleep(5)
-        else: # or print the error code if somethign went wrong
+        else:
             print(f'Job {job_name} failed with the error: {job_status}')
 
     def recognize_assemblyai(self, audio_data, api_token, job_name=None, **kwargs):
