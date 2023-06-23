@@ -1,0 +1,2 @@
+voxforge-5.2
+https://sourceforge.net/projects/cmusphinx/
