@@ -1400,8 +1400,9 @@ class Recognizer(AudioSource):
         else:
             return result["text"]
 
-    def recognize_whisper_api(self, path):
+    def recognize_whisper_api(self, path,key):
         import openai
+        openai.api_key = key
         file = open(path, "rb")
         transcription = openai.Audio.transcribe("whisper-1", file)
         print(transcription)
