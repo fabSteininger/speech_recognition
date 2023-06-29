@@ -833,7 +833,10 @@ class Recognizer(AudioSource):
         last_chunk = response_text.rfind("is_final")
         response_text = '{"'+response_text[last_chunk : ]
         # read the chunk as json file
-        result = json.loads(response_text)
+        try:
+            result = json.loads(response_text,strict=False)
+        except:
+            print("json error")
         
         # return results
         if show_all: return result
