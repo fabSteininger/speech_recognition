@@ -837,6 +837,7 @@ class Recognizer(AudioSource):
             result = json.loads(response_text,strict=False)
         except:
             print("json error")
+            
         
         # return results
         if show_all: return result
@@ -1182,7 +1183,7 @@ class Recognizer(AudioSource):
                     return None
                 else:
                     print(f"Status of job {job_name}: {status}")
-                    time.sleep(5)
+                    time.sleep(1)
         else:
             print(f'Job {job_name} failed with the error: {job_status}')
 
