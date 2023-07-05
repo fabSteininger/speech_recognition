@@ -1167,8 +1167,8 @@ class Recognizer(AudioSource):
                 status = job['TranscriptionJob']['TranscriptionJobStatus']
                 if status == 'COMPLETED':
                     print(f"Job {job_name} completed")
-                    duration = job['TranscriptionJob']['CompletionTime'] - job['TranscriptionJob']['CreationTime']
-                    print(f"Transcription job took {duration.seconds} seconds")
+                    #duration = job['TranscriptionJob']['CompletionTime'] - job['TranscriptionJob']['CreationTime']
+                    #print(f"Transcription job took {duration.seconds} seconds")
                     with urllib.request.urlopen(job['TranscriptionJob']['Transcript']['TranscriptFileUri']) as json_data:
                         d = json.load(json_data)
                         try:
