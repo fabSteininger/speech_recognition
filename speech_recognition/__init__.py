@@ -1183,7 +1183,7 @@ class Recognizer(AudioSource):
                     return None
                 else:
                     print(f"Status of job {job_name}: {status}")
-                    time.sleep(1)
+                    time.sleep(5)
         else:
             print(f'Job {job_name} failed with the error: {job_status}')
 
