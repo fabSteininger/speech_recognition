@@ -805,7 +805,7 @@ class Recognizer(AudioSource):
             transcript += result.alternatives[0].transcript.strip() + ' '
         return transcript
 
-    def recognize_wit(self, audio_data, key, show_all=False):
+    def recognize_wit(self, audio_data, key):
         """
         Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using the Wit.ai API.
         The Wit.ai API key is specified by ``key``. Unfortunately, these are not available without `signing up for an account <https://wit.ai/>`__ and creating an app. You will need to add at least one intent to the app before you can see the API key, though the actual intent settings don't matter.
@@ -829,20 +829,19 @@ class Recognizer(AudioSource):
         except URLError as e:
             raise RequestError("recognition connection failed: {}".format(e.reason))
         response_text = response.read().decode("utf-8")
-        # extract the last chunk 
-        last_chunk = response_text.rfind("is_final")
-        response_text = '{"'+response_text[last_chunk : ]
-        # read the chunk as json file
-        try:
-            result = json.loads(response_text,strict=False)
-        except:
-            print("json error")
-            
-        
-        # return results
-        if show_all: return result
-        if "text" not in result or result["text"] is None: raise UnknownValueError()
-        return result["text"]
+        response_text = response_text.replace('\n', '').replace('\r', '').strip()
+        response_text= response_text.replace('}{', '},{')
+        response_text = '[' + response_text + ']'
+
+        json_data = json.loads(response_text)
+
+        final_elements_text=""
+
+        for obj in json_data:
+            if obj.get("is_final") is True:
+                final_elements_text=final_elements_text+" "+obj["text"]
+
+        return(final_elements_text)
 
     def recognize_azure(self, audio_data, key, language="en-US", profanity="masked", location="westus", show_all=False):
         """
