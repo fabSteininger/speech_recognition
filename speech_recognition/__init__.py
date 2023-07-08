@@ -1402,6 +1402,22 @@ class Recognizer(AudioSource):
             return result
         else:
             return result["text"]
+        
+    def recognize_whisper_api(self, audio_data, key, language="de"):
+        assert isinstance(audio_data, AudioData), "Data must be audio data"
+        import openai
+        import json
+        import io
+        openai.api_key = key
+        wav_data = audio_data.get_wav_data(convert_rate=16000, convert_width=2)
+        # Create a file-like object in memory
+        audio_file = io.BytesIO(wav_data)
+        audio_file.name = "audio.wav"
+        # Perform transcription
+        data = openai.Audio.transcribe("whisper-1", audio_file, content_type="audio/wav",language=language)
+        data = json.loads(str(data))
+        transcription = data["text"]
+        return(transcription)
             
     def recognize_vosk(self, audio_data, modelPath):
         from vosk import Model, KaldiRecognizer
